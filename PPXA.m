@@ -1,220 +1,70 @@
-% This script uses the PPXA algorithm described in the report.
-%
-%
-
-clear all
-clc
-load("Sparse_Low_Rank_dataset.mat")
-
-
-N = size(H, 2);
-U = dftmtx(N);
-
-amountOfMatrices = size(H, 3); % The amount of matrices over which we will average
-amountOfMatrices = 10;
-
-sampledAmount = 150;
-
-rankR = 10;
-
-
-%
-maxSamples = 200;
-sampleList = ceil(linspace(1,maxSamples, 10));
-
-% Init results matrices
-diffList = zeros(numel(sampleList),amountOfMatrices);
-timeList = zeros(numel(sampleList),1);
-mList = zeros(numel(sampleList),1);
-
-
-maxPPAIteration = 100; % maximum amount of iteration allowed for PPXA algorithm
-
-% Regularization variables for the proximal operators
-omega = 0;
-lambda = 0.01;
-epsilon = 0.1;
-
-for samplingIndex = 1 : length(sampleList)
-    % Take measurements
-    sampleIndices = randperm(1024,sampleList(samplingIndex));
-    m = length(sampleIndices);
-    samplingMatrix = zeros(N,N);
-    samplingMatrix(sampleIndices) = 1;
+function X_n = PPXA(y,A,gama,initMatrix)
+    %PPXA Summary of this function goes here
+    %   Detailed explanation goes here
     
-    % Create the A matrix
-    AMatrix = zeros(m, N*N);
-    for index = 1:length(sampleIndices)
-        AMatrix(index, sampleIndices(index)) = 1;
-    end
+    % Temp conditions
+    % (y,A,U,lambda,gamma,initMatrix,maxIter)
+    maxIter = 1000;
+    lambda = 0.8;
+    rowNum = 32;
+    N = 32;
+
+    n = 0;
     
-    ATilde = AMatrix*kron(transpose(U),U');
+    X_n(:,:) = initMatrix;
+    Gamma(:,:,1) = initMatrix;
+    Gamma(:,:,2) = initMatrix;
+    Gamma(:,:,3) = initMatrix;
+    P1 = zeros(32);
+    P2 = zeros(32);
+    P3 = zeros(32);
+    % arg min nuc_norm(X) + l2,1 norm(X) + (y = Avec(X))
+    % Turns into
+    % arg min f1 + f2 + f3
     
-    tic();
-    for matrixIndex = 1 : amountOfMatrices
-        % Initialize the matrix to take measurements from
-        trueH = H(:,:,matrixIndex);
+    while n < maxIter
+
+        % perform prox for each f_i
+
+        % Prox f1
         
-        y = trueH(sampleIndices);
-        y = y(:);
-        
-    
-        yMatrix = trueH .* samplingMatrix;
-        
-        noConvergence = true;
-        PPAIteration = 0;
-        X(:,:,1) = U*yMatrix*U';
-        Gamma1(:,:,1) = X(:,:,1);
-        Gamma2(:,:,1) = X(:,:,1);
-        Gamma3(:,:,1) = X(:,:,1);
-        while noConvergence
-            PPAIteration = PPAIteration + 1;
-            n = PPAIteration; %n is better readible for the next code
-            
-            % prox for f_1 = i_B_*
-            [U1, S1, V1] = svd(Gamma1(:, :, n), 'vector');
-            S1(rankR:end) = 0;
-            S1 = diag(S1);
-            SigmaBar1 = exp(1i*angle(S1)).*max(0, abs(S1)-omega); % Unsure about this operator
-            P1(:,:,n) = U1 * SigmaBar1 * V1';
-            
-            % prox for f_2 = = ||X||_2,1
-            P2(:,:,n) = max(norm(Gamma2(:,:,n),2)-lambda, 0)/norm(Gamma2(:,:,n),2) * Gamma2(:,:,n);
-    
-            % prox for f_3 = i_B_l2
-            Astar = @(x) reshape(ATilde' * y, [N, N]);
-            r = y - ATilde * reshape(Gamma3(:,:,n), [N*N, 1]);
-            nu = 1024; % Derived by taking A^H A and seeing what value remains
-            P3(:,:,n) = Gamma3(:,:,n) + nu^-1 * Astar(r) * max(0, 1-epsilon*norm(r, 2)^-1);
-            
-            X(:,:,n+1) = (P1(:,:,n)+P2(:,:,n)+P3(:,:,n))./3;
-            
-            Gamma1(:,:,n+1) = Gamma1(:,:,n) + 2*X(:,:,n+1) - X(:,:,n) - P1(:,:,n);
-            Gamma2(:,:,n+1) = Gamma2(:,:,n) + 2*X(:,:,n+1) - X(:,:,n) - P2(:,:,n);
-            Gamma3(:,:,n+1) = Gamma3(:,:,n) + 2*X(:,:,n+1) - X(:,:,n) - P3(:,:,n);
-            
-            % Stopping criterion, this could be further expanded to include
-            % convergences
-            if PPAIteration > maxPPAIteration
-                break;
-            end
+        [U, S, V] = svd(Gamma(:,:,1),"econ");
+        Sbar = max(S-gama,0);
+        P1 = U*Sbar*V';
+
+        % Prox f2
+        % each row j of Gamma is scaled with 0 or some other value
+        for row = 1:rowNum
+            P2(row,:) = (max(norm(Gamma(row,:,2))-lambda,0)/norm(Gamma(row,:,2))) * Gamma(row,:,2);
         end
         
-        finalX = X(:,:,end);
-        % As the final solution often is wrongly scaled, only the support of this
-        % solution will be used. HhatBad shows the 'unoptimized' solution
-        HhatBad = U' *finalX * U;
-        diffListBad(samplingIndex, matrixIndex) = norm(abs(trueH-HhatBad), "fro");
-        %find the solution using an elbow method, which is inspired by PCA
-        %analysis for clustering
-        sortedX = sort(reshape(abs(finalX), [N*N,1]), "descend");
-        maxId = findElbow(sortedX);
-        support = find(abs(finalX) >= sortedX(ceil(maxId/2)));
+    
+        % Prox f3 = prox(y = Avec(X))
+        % prox f3 = Projection onto that space
+        % https://ieeexplore-ieee-org.tudelft.idm.oclc.org/abstract/document/5414555?casa_token=-jY5asgFqV4AAAAA:4n6ClfNTWXtxKH89h0pO6ydy-S4Hsm-HO2w52Rs4xgiOq-lsjRboaPf5v7v7ZYnU0uBxBxSzZQ
+        % = vec(X) + pseudo_inv(A)(y-Ax)
+
+        temp = reshape(Gamma(:,:,3),[N^2,1]) + A'*inv(A*A')*(y-A*reshape(Gamma(:,:,3),[N^2,1]));
+
+        % temp is still a vector so turn it back into a matrix
+
+        P3 = reshape(temp,[N,N]);
         
-        %most often the cardinality of the support is smaller than the amount
-        %of measurements, thus one can use the pseudo inverse, since now the
-        %system of equations is overdetermined (instead of underdetermined)
-        truncA = ATilde(:, support);
-        xHat = zeros(N*N,1);
-        xHat(support) = pinv(truncA)*y;
-        xHat = reshape(xHat, [N,N]);
+
+        % Caclulate new X
+
+        X_n1 = (P1 + P2 + P3)./3;
         
-        % Transform to the non-sparse domain
-        Hhat = U' *xHat * U;
         
-        % store the error
-        diffList(samplingIndex, matrixIndex) = norm(abs(trueH-Hhat), "fro");
+        % Calculate new Gamma
+
+        Gamma(:,:,1) = Gamma(:,:,1) + 2.*X_n1 - X_n - P1;
+        Gamma(:,:,2) = Gamma(:,:,2) + 2.*X_n1 - X_n - P2;
+        Gamma(:,:,3) = Gamma(:,:,3) + 2.*X_n1 - X_n - P3;
+
+        X_n = X_n1;
+        n = n + 1;
+
     end
-    finalTime = toc();
-    timeList(samplingIndex) = finalTime / amountOfMatrices;
-    disp("PPXA: Final time (avg) for " +m+ " samples is " + finalTime)
 end
 
-%% Usefull plots for debugging, and showing results
-figure(3)
-clf()
-subplot(2,3,1)
-heatmap(abs(trueH))
-title(" trueH")
-
-subplot(2,3,2)
-heatmap(abs(Hhat))
-title("Estimated matrix")
-
-subplot(2,3,3)
-heatmap(abs(HhatBad))
-title("HHAT BAD")
-
-subplot(2,3,4)
-heatmap(abs(U * trueH * U'))
-title("True H in sparse domain")
-
-subplot(2,3,5)
-heatmap(abs(xHat))
-title("Estimated H in sparse domain")
-
-subplot(2,3,6)
-heatmap(abs(U*HhatBad*U'))
-title("XHAT BAD")
-
-%%
-figure(4)
-heatmap(abs(U * trueH * U'))
-title("Sparse representation of H")
-
-figure(5)
-heatmap(abs(U*HhatBad*U'))
-title("Sparse representation of estimated H")
-
-figure(6)
-heatmap(abs(U*Hhat*U'))
-title("Sparse representation of new estimation of H")
-
-%%
-% %
-% figure(10)
-% clf;
-% sortedX = sort(reshape(abs(finalX), [N*N,1]), "descend");
-% yyaxis left
-% plot(sortedX(1:100), LineWidth=2)
-% ylabel('$|\hat{\mathbf{X}}|$', Interpreter='latex')
-% 
-% yyaxis right
-% sortedTrueX = sort(reshape(abs(U * trueH * U'), [N*N,1]), "descend");
-% plot(sortedTrueX(1:100), LineWidth=2)
-% ylabel('$|\mathbf{X}|$', Interpreter='latex')
-% 
-% xlabel("Index in the ordering")
-% title("X values ordered by size")
-
-%
-figure(11)
-clf;
-yyaxis left
-barplot = bar(sampleList, mean(diffList,2));
-ylabel("$\frac{||\hat{H} - H||_F}{||H||_F}$", 'interpreter','latex', 'FontSize',20)
-
-yyaxis right
-timeplot = plot(sampleList, timeList, 'LineWidth', 2);
-ylabel("Averaged computation time [s]")
-xlabel("Amount of samples taken")
-
-title("Reconstruction error using PPXA")
-
-%
-figure(12)
-clf;
-yyaxis left
-barplot = bar(sampleList, mean(diffListBad,2));
-ylabel("$\frac{||\hat{H} - H||_F}{||H||_F}$", 'interpreter','latex', 'FontSize',20)
-
-yyaxis right
-timeplot = plot(sampleList, timeList, 'LineWidth', 2);
-ylabel("Averaged computation time [s]")
-xlabel("Amount of samples taken")
-
-title("Reconstruction error using PPXA without finding its support and solving for that support")
-
-%%
-sortedX = sort(reshape(abs(finalX), [N*N,1]), "descend");
-maxId = findElbow(sortedX);
