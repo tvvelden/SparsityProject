@@ -6,8 +6,6 @@ clear all
 
 load("Sparse_Low_Rank_dataset.mat")
 
-H = gpuArray(H);
-
 N = size(H,1); % Every matrix in H is of shape N x N
 numMatrices = size(H,3); % Number of matrices in H
 % numMatrices = 10; % This can be used for speeding up testing
